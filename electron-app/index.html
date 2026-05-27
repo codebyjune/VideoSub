@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>VideoSub</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- ═══ Sidebar ══════════════════════════════════════ -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="app-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="23 7 16 12 23 17 23 7"/>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+        </div>
+        <h1>VideoSub</h1>
+        <p class="sidebar-tagline">Download · Transcribe · Translate</p>
+      </div>
+
+      <nav class="steps-nav">
+        <div id="stepDownload" class="step-item">
+          <span class="step-dot"></span>
+          Download
+        </div>
+        <div id="stepTranscribe" class="step-item">
+          <span class="step-dot"></span>
+          Transcribe
+        </div>
+        <div id="stepTranslate" class="step-item">
+          <span class="step-dot"></span>
+          Translate
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <button id="themeToggle" class="theme-toggle">
+          <svg class="theme-toggle-icon" id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/>
+            <line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/>
+            <line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+          <span id="themeLabel">Dark</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ═══ Main Content ══════════════════════════════════ -->
+    <main id="main">
+
+      <!-- URL + Settings Card -->
+      <section class="card">
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="url">Video URL</label>
+            <input type="text" id="url" placeholder="Paste a YouTube or video link…" autofocus>
+          </div>
+        </div>
+
+        <div class="form-row three-col">
+          <div class="form-group">
+            <label for="modelSize">Whisper Model</label>
+            <select id="modelSize">
+              <option value="tiny.en">tiny.en (Fastest)</option>
+              <option value="small.en">small.en</option>
+              <option value="medium.en" selected>medium.en (Recommended)</option>
+              <option value="large-v3">large-v3 (Most Accurate)</option>
+              <option value="large-v3-turbo">large-v3-turbo (Accurate & Fast)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="apiKey">DeepSeek API Key</label>
+            <input type="password" id="apiKey" placeholder="sk-...">
+          </div>
+          <div class="form-group">
+            <label for="baseUrl">API Endpoint</label>
+            <input type="text" id="baseUrl" placeholder="https://api.deepseek.com">
+          </div>
+        </div>
+
+        <div class="form-row" style="margin-top: 8px;">
+          <div class="form-group">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" id="burnSubtitles">
+              硬嵌入字幕到视频 (Burn subtitles into video)
+            </label>
+          </div>
+        </div>
+
+        <div class="action-row" style="margin-top: 4px;">
+          <button id="startBtn" class="btn-primary">Start</button>
+          <span id="statusBadge" class="badge idle">Ready</span>
+        </div>
+      </section>
+
+      <!-- Progress Card -->
+      <section class="card progress-section">
+        <div class="progress-bar-bg">
+          <div id="progressBar" class="progress-bar-fill"></div>
+        </div>
+        <div class="progress-steps">
+          <span class="step">Download</span>
+          <span class="step">Transcribe</span>
+          <span class="step">Translate</span>
+        </div>
+      </section>
+
+      <!-- Log Card -->
+      <section class="card" style="flex: 1; display: flex; flex-direction: column;">
+        <div class="output-header">
+          <h2>Log</h2>
+          <button id="clearBtn" class="btn-sm">Clear</button>
+        </div>
+        <pre id="logBox" class="log-box"></pre>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

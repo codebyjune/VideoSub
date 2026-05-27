@@ -1,0 +1,16 @@
+{
+  "name": "video-subtitle-tool",
+  "version": "1.0.0",
+  "description": "VideoSub — download videos, transcribe with Whisper, translate with DeepSeek",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "dependencies": {
+    "openai": "^4.73.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}
