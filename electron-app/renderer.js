@@ -193,7 +193,7 @@ startBtn.addEventListener("click", async () => {
     return;
   }
   if (!apiKey) {
-    appendLog("Please enter a DeepSeek API Key");
+    appendLog("Please enter an LLM API Key");
     return;
   }
 

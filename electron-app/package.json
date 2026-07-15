@@ -1,7 +1,7 @@
 {
   "name": "video-subtitle-tool",
   "version": "1.0.0",
-  "description": "VideoSub — download videos, transcribe with Whisper, translate with DeepSeek",
+  "description": "VideoSub — download videos, transcribe with Whisper, translate with LLM",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

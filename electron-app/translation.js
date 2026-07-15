@@ -16,7 +16,7 @@ const LANG_CONFIG = {
     target: "Simplified Chinese",
     style: "(适合中文字幕风格)",
     langName: "Chinese",
-    logStep: "DeepSeek 翻译中文字幕",
+    logStep: "LLM 翻译中文字幕",
   },
   tr: {
     label: "Türkçe",
@@ -24,7 +24,7 @@ const LANG_CONFIG = {
     target: "Turkish",
     style: "(Türkçe altyazı stili)",
     langName: "Turkish",
-    logStep: "DeepSeek 翻译土耳其语字幕",
+    logStep: "LLM 翻译土耳其语字幕",
   },
 };
 

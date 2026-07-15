@@ -131,7 +131,7 @@ ipcMain.handle(
 
     try {
       if (!url || !url.trim()) throw new Error("请输入视频链接");
-      if (!apiKey || !apiKey.trim()) throw new Error("请输入 DeepSeek API Key");
+      if (!apiKey || !apiKey.trim()) throw new Error("请输入 LLM API Key");
 
       sendStatus("running");
 
