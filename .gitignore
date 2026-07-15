@@ -29,3 +29,6 @@ downloads/
 
 # Node
 electron-app/node_modules/
+
+# MLX models (large files)
+models/
