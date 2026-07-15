@@ -121,6 +121,7 @@ def main():
         language="en",
         temperature=0.0,
         no_speech_threshold=0.3,
+        condition_on_previous_text=False,
         word_timestamps=True,
         verbose=False,
     )
@@ -131,6 +132,18 @@ def main():
     srt_filename = os.path.splitext(video_file)[0] + ".srt"
 
     segments = result.get("segments", [])
+
+    def is_repetition_hallucination(text, max_repeat=5):
+        words = text.strip().rstrip(".").split()
+        if not words:
+            return False
+        counts = {}
+        for w in words:
+            w_clean = w.rstrip(".,;:!?")
+            counts[w_clean] = counts.get(w_clean, 0) + 1
+        return any(c >= max_repeat for c in counts.values())
+
+    skipped_repetition = 0
     written = 0
     with open(srt_filename, "w", encoding="utf-8") as f:
         for segment in segments:
@@ -139,6 +152,10 @@ def main():
             text = segment.get("text", "").strip()
             if not text:
                 continue  # 跳过空段
+            if is_repetition_hallucination(text):
+                skipped_repetition += 1
+                print(f"[跳过重复] {text[:80]}...")
+                continue
             written += 1
             f.write(f"{written}\n")
             f.write(f"{format_timestamp(start)} --> {format_timestamp(end)}\n")
@@ -147,6 +164,8 @@ def main():
             print(f"[{format_timestamp(start)} --> {format_timestamp(end)}] {text}")
 
     print(f"\n✅ 字幕文件已保存：{srt_filename}")
+    if skipped_repetition > 0:
+        print(f"   跳过重复幻觉段: {skipped_repetition} 条")
     # 标记输出，方便 Electron 解析
     print(f"SRT_OUTPUT:{os.path.abspath(srt_filename)}")
 
