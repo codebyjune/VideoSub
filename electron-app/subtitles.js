@@ -77,6 +77,22 @@ function getBurnSubtitlePath(srtPath, mode) {
 
 function burnSubtitlesIntoVideo(videoPath, srtPath) {
   return new Promise((resolve, reject) => {
+    const ext = path.extname(videoPath);
+    const outputPath = videoPath.replace(ext, `_subtitled${ext}`);
+
+    if (fs.existsSync(outputPath)) {
+      try {
+        const srtMtime = fs.statSync(srtPath).mtimeMs;
+        const outMtime = fs.statSync(outputPath).mtimeMs;
+        if (outMtime >= srtMtime) {
+          sendLog(`  ✓ 已存在嵌入字幕的视频，跳过烧录: ${path.basename(outputPath)}`);
+          sendProgress("burn", 100);
+          resolve(outputPath);
+          return;
+        }
+      } catch {}
+    }
+
     const tmpSrt = path.join(
       ROOT_DIR,
       "downloads",
@@ -89,11 +105,8 @@ function burnSubtitlesIntoVideo(videoPath, srtPath) {
       return;
     }
 
-    const ext = path.extname(videoPath);
-    let outputPath = videoPath.replace(ext, `_subtitled${ext}`);
     if (fs.existsSync(outputPath)) {
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      outputPath = videoPath.replace(ext, `_subtitled_${stamp}${ext}`);
+      try { fs.unlinkSync(outputPath); } catch {}
     }
 
     const args = [

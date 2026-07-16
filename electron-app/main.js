@@ -154,7 +154,8 @@ ipcMain.handle(
             break;
           }
 
-          const videoPath = videoFiles[i];
+          const rawPath = videoFiles[i];
+          const videoPath = organizeIntoSeriesDir(rawPath);
           sendLog("");
           sendLog(`═══════════════════════════════════`);
           sendLog(`  处理第 ${i + 1}/${videoFiles.length} 集`);
