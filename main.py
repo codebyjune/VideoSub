@@ -115,13 +115,17 @@ def main():
         model_path = local_path
 
     # mlx-whisper 在 Apple Silicon 上自动使用 Metal 加速
+    # no_speech_threshold=0.6（默认值）：原 0.3 过于激进，会把含背景音/停顿的真实语音
+    #   误判为静音而整段跳过，是"偶尔漏几句话"的主因。
+    # condition_on_previous_text=True：保留 30s 窗口之间的上下文，减少边界丢词；
+    #   由此可能产生的跨窗口重复幻觉由下方 is_near_duplicate 过滤。
     result = mlx_whisper.transcribe(
         video_file,
         path_or_hf_repo=model_path,
         language="en",
         temperature=0.0,
-        no_speech_threshold=0.3,
-        condition_on_previous_text=False,
+        no_speech_threshold=0.6,
+        condition_on_previous_text=True,
         word_timestamps=True,
         verbose=False,
     )
@@ -143,8 +147,25 @@ def main():
             counts[w_clean] = counts.get(w_clean, 0) + 1
         return any(c >= max_repeat for c in counts.values())
 
+    def is_near_duplicate(text, prev_text, threshold=0.9):
+        """检测跨 30s 窗口的重复幻觉（condition_on_previous_text=True 时偶发）。"""
+        if not prev_text:
+            return False
+        a = text.lower().strip().rstrip(".,;:!?")
+        b = prev_text.lower().strip().rstrip(".,;:!?")
+        if not a or not b:
+            return False
+        if a == b:
+            return True
+        wa, wb = a.split(), b.split()
+        if len(wa) < 4 or len(wb) < 4:
+            return False
+        sa, sb = set(wa), set(wb)
+        return len(sa & sb) / max(len(sa), len(sb)) >= threshold
+
     skipped_repetition = 0
     written = 0
+    prev_text = ""
     with open(srt_filename, "w", encoding="utf-8") as f:
         for segment in segments:
             start = segment.get("start", 0)
@@ -156,6 +177,11 @@ def main():
                 skipped_repetition += 1
                 print(f"[跳过重复] {text[:80]}...")
                 continue
+            if is_near_duplicate(text, prev_text):
+                skipped_repetition += 1
+                print(f"[跳过跨窗口重复] {text[:80]}...")
+                continue
+            prev_text = text
             written += 1
             f.write(f"{written}\n")
             f.write(f"{format_timestamp(start)} --> {format_timestamp(end)}\n")
