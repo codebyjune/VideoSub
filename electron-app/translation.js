@@ -90,6 +90,64 @@ function parseTranslationResponse(raw, expectedCount) {
   return lines.map((l) => l.replace(/^\d+[\.\、\)]\s*/, "").trim());
 }
 
+const TRANSLATE_CONCURRENCY = 4;
+
+async function translateOneBatch(batch, batchIndex, batchCount, client, llmModel, targetLang) {
+  const lang = LANG_CONFIG[targetLang] || LANG_CONFIG.zh;
+  const batchJson = JSON.stringify(batch.map((e) => e.text));
+  const n = batch.length;
+  const systemPrompt = buildTranslationSystemPrompt(targetLang);
+  const userPrompt = `Translate the following ${n} English subtitle lines (batch ${batchIndex + 1}/${batchCount}) into natural, fluent ${lang.langName}.
+
+CRITICAL:
+- Output EXACTLY ${n} ${lang.langName} strings — same count as input, no exceptions.
+- Each line is a SEPARATE subtitle with its own timestamp. Do NOT merge adjacent lines.
+- Preserve EXACT order.
+- Apply the polysemy and domain rules from the system instructions carefully.
+
+Output ONLY a JSON array of ${n} ${lang.langName} strings. No explanations, no markdown.
+
+${batchJson}`;
+
+  const response = await client.messages.create({
+    model: llmModel,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userPrompt }],
+    temperature: 0.3,
+    max_tokens: 16000,
+  });
+
+  const raw = extractResponseText(response).trim();
+  let arr = parseTranslationResponse(raw, n);
+
+  if (!arr) {
+    sendLog(`    ⚠ 第 ${batchIndex + 1} 批数量不匹配，重试中...`);
+    const retryPrompt = `COUNT CHECK FAILED. You returned the wrong number of translations for batch ${batchIndex + 1}/${batchCount}. This is a CRITICAL error.
+
+You MUST output EXACTLY ${n} ${lang.langName} strings — not ${n - 1}, not ${n + 1}. EXACTLY ${n}.
+Each line below is a SEPARATE subtitle. NEVER merge adjacent lines.
+Apply the same quality rules (polysemy, natural flow) as before.
+
+${batchJson}`;
+    const retryResp = await client.messages.create({
+      model: llmModel,
+      system: systemPrompt,
+      messages: [{ role: "user", content: retryPrompt }],
+      temperature: 0.1,
+      max_tokens: 16000,
+    });
+    const retryRaw = extractResponseText(retryResp).trim();
+    arr = parseTranslationResponse(retryRaw, n);
+  }
+
+  if (!arr) {
+    sendLog(`    ⚠ 第 ${batchIndex + 1} 批降级为逐条翻译...`);
+    arr = await translateOneByOne(batch, client, llmModel, targetLang);
+  }
+
+  return arr;
+}
+
 async function translateOneByOne(entries, client, llmModel, targetLang) {
   const lang = LANG_CONFIG[targetLang] || LANG_CONFIG.zh;
   const systemPrompt = buildTranslationSystemPrompt(targetLang);
@@ -139,78 +197,57 @@ async function translateEntriesInBatchesCore(
   progressBase,
   progressRange,
 ) {
-  const lang = LANG_CONFIG[targetLang] || LANG_CONFIG.zh;
   const batchSize = 30;
   const batches = [];
   for (let i = 0; i < entries.length; i += batchSize) {
     batches.push(entries.slice(i, i + batchSize));
   }
 
-  sendLog(`  共 ${batches.length} 批，每批 ${batchSize} 条`);
+  sendLog(`  共 ${batches.length} 批，每批 ${batchSize} 条（${TRANSLATE_CONCURRENCY} 路并发）`);
 
-  const allTranslations = [];
-  for (let i = 0; i < batches.length; i++) {
-    if (getIsCancelled()) throw new Error("任务已取消");
+  const results = new Array(batches.length);
+  let completed = 0;
+  let cursor = 0;
+  let aborted = false;
+  let firstErr = null;
 
-    sendLog(`  翻译第 ${i + 1}/${batches.length} 批...`);
-    const pct = progressBase + Math.round(((i + 1) / batches.length) * progressRange);
-    sendProgress("translate", Math.min(pct, progressBase + progressRange));
-
-    const batchJson = JSON.stringify(batches[i].map((e) => e.text));
-    const batchCount = batches[i].length;
-    const systemPrompt = buildTranslationSystemPrompt(targetLang);
-    const userPrompt = `Translate the following ${batchCount} English subtitle lines (batch ${i + 1}/${batches.length}) into natural, fluent ${lang.langName}.
-
-CRITICAL:
-- Output EXACTLY ${batchCount} ${lang.langName} strings — same count as input, no exceptions.
-- Each line is a SEPARATE subtitle with its own timestamp. Do NOT merge adjacent lines.
-- Preserve EXACT order.
-- Apply the polysemy and domain rules from the system instructions carefully.
-
-Output ONLY a JSON array of ${batchCount} ${lang.langName} strings. No explanations, no markdown.
-
-${batchJson}`;
-
-    const response = await client.messages.create({
-      model: llmModel,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
-      temperature: 0.3,
-      max_tokens: 16000,
-    });
-
-    const raw = extractResponseText(response).trim();
-    let arr = parseTranslationResponse(raw, batchCount);
-
-    if (!arr) {
-      sendLog(`    ⚠ 第 ${i + 1} 批数量不匹配，重试中...`);
-      const retryPrompt = `COUNT CHECK FAILED. You returned the wrong number of translations for batch ${i + 1}/${batches.length}. This is a CRITICAL error.
-
-You MUST output EXACTLY ${batchCount} ${lang.langName} strings — not ${batchCount - 1}, not ${batchCount + 1}. EXACTLY ${batchCount}.
-Each line below is a SEPARATE subtitle. NEVER merge adjacent lines.
-Apply the same quality rules (polysemy, natural flow) as before.
-
-${batchJson}`;
-      const retryResp = await client.messages.create({
-        model: llmModel,
-        system: systemPrompt,
-        messages: [{ role: "user", content: retryPrompt }],
-        temperature: 0.1,
-        max_tokens: 16000,
-      });
-      const retryRaw = extractResponseText(retryResp).trim();
-      arr = parseTranslationResponse(retryRaw, batchCount);
+  const worker = async () => {
+    while (cursor < batches.length && !aborted) {
+      if (getIsCancelled()) {
+        aborted = true;
+        const err = new Error("任务已取消");
+        if (!firstErr) firstErr = err;
+        throw err;
+      }
+      const i = cursor++;
+      try {
+        results[i] = await translateOneBatch(
+          batches[i], i, batches.length, client, llmModel, targetLang,
+        );
+        completed++;
+        sendLog(`  ✓ 完成 ${completed}/${batches.length} 批`);
+        const pct = progressBase + Math.round((completed / batches.length) * progressRange);
+        sendProgress("translate", Math.min(pct, progressBase + progressRange));
+      } catch (e) {
+        if (!firstErr) firstErr = e;
+        aborted = true;
+        throw e;
+      }
     }
+  };
 
-    if (!arr) {
-      sendLog(`    ⚠ 第 ${i + 1} 批降级为逐条翻译...`);
-      arr = await translateOneByOne(batches[i], client, llmModel, targetLang);
-    }
-
-    allTranslations.push(...arr);
+  const workers = Array.from(
+    { length: Math.min(TRANSLATE_CONCURRENCY, batches.length) },
+    () => worker(),
+  );
+  try {
+    await Promise.all(workers);
+  } catch (e) {
+    if (firstErr && firstErr !== e) throw firstErr;
+    throw e;
   }
 
-  return allTranslations;
+  return results.flat();
 }
 
 async function translateEntriesCore(
