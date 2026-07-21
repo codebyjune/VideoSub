@@ -157,7 +157,9 @@ def main():
             return False
         if a == b:
             return True
-        wa, wb = a.split(), b.split()
+        def _strip_punct(ws):
+            return [w.rstrip(".,;:!?") for w in ws]
+        wa, wb = _strip_punct(a.split()), _strip_punct(b.split())
         if len(wa) < 4 or len(wb) < 4:
             return False
         sa, sb = set(wa), set(wb)

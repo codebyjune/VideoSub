@@ -208,18 +208,31 @@ async function translateEntriesInBatchesCore(
   const results = new Array(batches.length);
   let completed = 0;
   let cursor = 0;
+  let aborted = false;
+  let firstErr = null;
 
   const worker = async () => {
-    while (cursor < batches.length) {
-      if (getIsCancelled()) throw new Error("任务已取消");
+    while (cursor < batches.length && !aborted) {
+      if (getIsCancelled()) {
+        aborted = true;
+        const err = new Error("任务已取消");
+        if (!firstErr) firstErr = err;
+        throw err;
+      }
       const i = cursor++;
-      results[i] = await translateOneBatch(
-        batches[i], i, batches.length, client, llmModel, targetLang,
-      );
-      completed++;
-      sendLog(`  ✓ 完成 ${completed}/${batches.length} 批`);
-      const pct = progressBase + Math.round((completed / batches.length) * progressRange);
-      sendProgress("translate", Math.min(pct, progressBase + progressRange));
+      try {
+        results[i] = await translateOneBatch(
+          batches[i], i, batches.length, client, llmModel, targetLang,
+        );
+        completed++;
+        sendLog(`  ✓ 完成 ${completed}/${batches.length} 批`);
+        const pct = progressBase + Math.round((completed / batches.length) * progressRange);
+        sendProgress("translate", Math.min(pct, progressBase + progressRange));
+      } catch (e) {
+        if (!firstErr) firstErr = e;
+        aborted = true;
+        throw e;
+      }
     }
   };
 
@@ -227,7 +240,12 @@ async function translateEntriesInBatchesCore(
     { length: Math.min(TRANSLATE_CONCURRENCY, batches.length) },
     () => worker(),
   );
-  await Promise.all(workers);
+  try {
+    await Promise.all(workers);
+  } catch (e) {
+    if (firstErr && firstErr !== e) throw firstErr;
+    throw e;
+  }
 
   return results.flat();
 }
