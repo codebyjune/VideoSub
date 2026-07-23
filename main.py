@@ -93,6 +93,169 @@ def format_timestamp(seconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
+# ─── 转录后补漏：检测 + 二次补录 + 合并 ───────────────────────────────────
+GAP_THRESHOLD = 2.5        # 间隙≥2.5s 视为可疑遗漏
+BACKFILL_CHUNK = 30.0      # 单次补录窗口上限（Whisper 单窗口即 30s）
+LOGPROB_SURE = -0.8        # 前后段 avg_logprob ≥ 此值 → 确信有说话，间隙更可疑
+
+
+def get_media_duration(video_file):
+    """获取媒体总时长（秒）。失败返回 None。"""
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_file,
+            ],
+            stderr=subprocess.DEVNULL,
+        )
+        return float(out.decode().strip())
+    except Exception:
+        return None
+
+
+def find_suspicious_gaps(segments, total_duration=None):
+    """
+    扫描 segment 时间轴，找出可疑的遗漏间隙。
+
+    判定逻辑（logprob 加权）：
+      - 时间间隔 ≥ GAP_THRESHOLD
+      - 且 前后段 avg_logprob 较高（说明前后确实在说话，中间突然断了更可疑）
+
+    返回 [(gap_start, gap_end, score), ...]
+        score ∈ [0,1]，越大越值得补录。
+    """
+    gaps = []
+    n = len(segments)
+    for i in range(n - 1):
+        cur_end = segments[i].get("end", 0)
+        nxt_start = segments[i + 1].get("start", 0)
+        gap = nxt_start - cur_end
+        if gap < GAP_THRESHOLD:
+            continue
+
+        # 前后段的置信度
+        lp_before = segments[i].get("avg_logprob", float("nan"))
+        lp_after = segments[i + 1].get("avg_logprob", float("nan"))
+        import math
+        if math.isnan(lp_before):
+            lp_before = LOGPROB_SURE
+        if math.isnan(lp_after):
+            lp_after = LOGPROB_SURE
+
+        # 两端都确信有说话 → 间隙可疑度最高
+        sure = (lp_before >= LOGPROB_SURE) + (lp_after >= LOGPROB_SURE)
+        # 时间因子：间隙越长越可疑（线性，封顶 1.0 @ 10s）
+        time_factor = min(gap / 10.0, 1.0)
+        score = (sure / 2.0) * 0.6 + time_factor * 0.4
+
+        gaps.append((cur_end, nxt_start, score))
+
+    # 片尾不补：结尾之后的静音不是遗漏
+    return gaps
+
+
+def backfill_gap(video_file, model_path, gap_start, gap_end, lang="en"):
+    """
+    对单个可疑间隙做二次补录。
+
+    使用 clip_timestamps 精确限定到 [gap_start, gap_end] 区间，
+    采用更激进的 no_speech_threshold（0.3）捕获弱语音，
+    关闭 condition_on_previous_text 避免被前文带偏，
+    并启用 logprob / compression_ratio 防幻觉阈值。
+    超过 30s 的间隙自动分块。
+    """
+    import mlx_whisper
+
+    backfilled = []
+    t = gap_start
+    while t < gap_end - 0.05:
+        chunk_end = min(t + BACKFILL_CHUNK, gap_end)
+        try:
+            res = mlx_whisper.transcribe(
+                video_file,
+                path_or_hf_repo=model_path,
+                language=lang,
+                temperature=0.0,
+                no_speech_threshold=0.3,
+                condition_on_previous_text=False,
+                word_timestamps=True,
+                clip_timestamps=[t, chunk_end],
+                compression_ratio_threshold=2.4,
+                logprob_threshold=-1.0,
+                verbose=False,
+            )
+            for seg in res.get("segments", []):
+                txt = seg.get("text", "").strip()
+                if not txt:
+                    continue
+                # 校正：clip 内的 segment 时间戳已是绝对时间
+                seg_start = seg.get("start", t)
+                seg_end = seg.get("end", chunk_end)
+                # 裁剪到 gap 范围内（防止模型把邻近内容带进来）
+                if seg_end <= gap_start or seg_start >= gap_end:
+                    continue
+                seg_start = max(seg_start, gap_start)
+                seg_end = min(seg_end, gap_end)
+                backfilled.append({
+                    "start": seg_start,
+                    "end": seg_end,
+                    "text": txt,
+                    "avg_logprob": seg.get("avg_logprob", float("nan")),
+                    "_backfilled": True,
+                })
+        except Exception as e:
+            print(f"  ⚠ 补录 [{t:.1f}-{chunk_end:.1f}] 失败: {e}")
+        t = chunk_end
+    return backfilled
+
+
+def merge_segments(original, backfilled, is_near_duplicate_fn):
+    """
+    把补录段合并进原 segment 列表：
+      - 按 start 时间排序
+      - 双重去重：
+        1) 文本相似（复用 is_near_duplicate）
+        2) 时间区间大量重叠（IoU ≥ 0.5）—— Whisper 常把同一句话
+           转录成略微不同的文本，仅靠文本相似度抓不全。
+      - 冲突时保留 avg_logprob 更高（更可信）的那条。
+    """
+    merged = list(original) + backfilled
+    merged.sort(key=lambda s: s.get("start", 0))
+
+    def _iou(a, b):
+        as_, ae = a.get("start", 0), a.get("end", 0)
+        bs, be = b.get("start", 0), b.get("end", 0)
+        if ae <= as_ or be <= bs:
+            return 0.0
+        inter = min(ae, be) - max(as_, bs)
+        union = max(ae, be) - min(as_, bs)
+        return inter / union if union > 0 else 0.0
+
+    deduped = []
+    for seg in merged:
+        txt = seg.get("text", "").strip()
+        if not txt:
+            continue
+        # 与已收录的最近 2 条比较（前后邻居都可能重复）
+        is_dup = False
+        for prev in deduped[-2:]:
+            if is_near_duplicate_fn(txt, prev.get("text", "")) or _iou(seg, prev) >= 0.5:
+                # 保留更可信的
+                if seg.get("avg_logprob", -9) > prev.get("avg_logprob", -9):
+                    prev.clear()
+                    prev.update(seg)
+                is_dup = True
+                break
+        if not is_dup:
+            deduped.append(seg)
+    return deduped
+# ──────────────────────────────────────────────────────────────────────
+
+
 def main():
     if len(sys.argv) < 2:
         print("用法: python main.py <video_path> [model_size]")
@@ -165,25 +328,71 @@ def main():
         sa, sb = set(wa), set(wb)
         return len(sa & sb) / max(len(sa), len(sb)) >= threshold
 
+    # 先过滤掉重复幻觉段，得到干净的初始 segment 列表
+    clean_segments = []
     skipped_repetition = 0
-    written = 0
     prev_text = ""
+    for segment in segments:
+        text = segment.get("text", "").strip()
+        if not text:
+            continue
+        if is_repetition_hallucination(text):
+            skipped_repetition += 1
+            print(f"[跳过重复] {text[:80]}...")
+            continue
+        if is_near_duplicate(text, prev_text):
+            skipped_repetition += 1
+            print(f"[跳过跨窗口重复] {text[:80]}...")
+            continue
+        prev_text = text
+        clean_segments.append(segment)
+
+    print(f"初始转录段: {len(clean_segments)} 条（跳过重复 {skipped_repetition} 条）")
+
+    # ─── 转录后补漏：检测可疑间隙并二次补录 ─────────────────────────────
+    total_duration = get_media_duration(video_file)
+    gaps = find_suspicious_gaps(clean_segments, total_duration)
+    if gaps:
+        print(f"\n🔎 检测到 {len(gaps)} 个可疑遗漏间隙（≥{GAP_THRESHOLD}s）:")
+        for gs, ge, sc in gaps:
+            print(f"   [{format_timestamp(gs)} → {format_timestamp(ge)}] "
+                  f"时长 {ge-gs:.1f}s  可疑度 {sc:.2f}")
+
+        all_backfilled = []
+        for idx, (gs, ge, sc) in enumerate(gaps, 1):
+            # 零门槛全补：对所有 ≥2.5s 间隙都补录，追求最高覆盖率
+            print(f"   [{idx}] 补录中...")
+            bf = backfill_gap(video_file, model_path, gs, ge, lang="en")
+            if bf:
+                print(f"        ✓ 补回 {len(bf)} 段:")
+                for b in bf:
+                    print(f"          [{format_timestamp(b['start'])} → "
+                          f"{format_timestamp(b['end'])}] {b['text'][:60]}")
+                all_backfilled.extend(bf)
+            else:
+                print(f"        - 该间隙无语音（确属静音）")
+
+        if all_backfilled:
+            clean_segments = merge_segments(
+                clean_segments, all_backfilled, is_near_duplicate
+            )
+            print(f"\n✅ 补漏完成：新增 {len(all_backfilled)} 段，"
+                  f"合并后共 {len(clean_segments)} 段")
+    else:
+        print("\n✓ 未检测到可疑遗漏间隙")
+
+    # ─── 输出 SRT ──────────────────────────────────────────────────────
+    written = 0
     with open(srt_filename, "w", encoding="utf-8") as f:
-        for segment in segments:
+        for segment in clean_segments:
             start = segment.get("start", 0)
             end = segment.get("end", 0)
             text = segment.get("text", "").strip()
             if not text:
-                continue  # 跳过空段
-            if is_repetition_hallucination(text):
-                skipped_repetition += 1
-                print(f"[跳过重复] {text[:80]}...")
                 continue
-            if is_near_duplicate(text, prev_text):
-                skipped_repetition += 1
-                print(f"[跳过跨窗口重复] {text[:80]}...")
+            # 过滤掉纯标点/无意义残留（如 "."、"..."、"嗯." 等）
+            if not any(c.isalnum() for c in text):
                 continue
-            prev_text = text
             written += 1
             f.write(f"{written}\n")
             f.write(f"{format_timestamp(start)} --> {format_timestamp(end)}\n")
