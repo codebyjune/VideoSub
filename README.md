@@ -11,6 +11,7 @@ Download → Transcribe → Translate → Burn subtitles, all-in-one desktop too
 
 - **视频下载** — 基于 yt-dlp，支持 YouTube 等主流视频网站
 - **Whisper 转录** — 本地运行 [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)，支持 tiny.en ~ large-v3 多档模型，Apple Silicon (Metal) 自动加速
+- **转录后补漏** — 首次转录完成后自动扫描时间轴，对所有 ≥2.5s 的未覆盖间隙做二次补录，追求最高覆盖率，几乎不漏句子
 - **DeepSeek 翻译** — 字幕逐条翻译为中文，自动分批 + 降级重试，保证 1:1 行数对齐
 - **硬嵌入字幕** — 可选，翻译完成后用 FFmpeg 将双语字幕直接烧录进视频画面
 - **暗色主题** — 自动跟随系统，也可手动切换
@@ -64,11 +65,35 @@ npm start
 
 生成的 SRT 字幕和视频文件在 `downloads/` 目录下。
 
+## 转录后补漏机制 / Backfill
+
+Whisper 首次转录时 `no_speech_threshold=0.6` 会把弱语音/低能量段误判为静音而跳过，导致偶尔漏掉整句话。本工具在转录完成后自动做二次补漏：
+
+```
+首次转录(0.6) → 过滤重复幻觉 → 扫描时间轴找 ≥2.5s 间隙
+                                    ↓
+                    对所有间隙二次补录(0.3，零门槛全补)
+                                    ↓
+                          双重去重合并 → 输出 SRT
+```
+
+**关键参数：**
+
+| 参数 | 首次转录 | 补录 |
+|------|---------|------|
+| `no_speech_threshold` | 0.6（保准确） | 0.3（捕获弱语音） |
+| `condition_on_previous_text` | True（减少边界丢词） | False（孤立片段不被带偏） |
+| `temperature` | 0.0 | 0.0（防幻觉） |
+
+**去重策略：** 文本相似度（≥0.9）+ 时间重叠 IoU（≥0.5），冲突时保留 `avg_logprob` 更高的条目。
+
+> 时间代价约 +15-25%，换取几乎不漏句子的覆盖率。
+
 ## 架构 / Architecture
 
 ```
 videosub/
-├── main.py                  # Python: mlx-whisper 转录脚本
+├── main.py                  # Python: mlx-whisper 转录 + 转录后补漏（检测/补录/合并）
 ├── pyproject.toml           # Python 项目配置 (uv)
 ├── bin/                     # 预置二进制文件（需自行下载/安装）
 │   ├── yt-dlp*              #   视频下载
@@ -94,7 +119,13 @@ UI (index.html)
 renderer.js ──IPC──▶ main.js
                         │
                         ├─ 1. spawn yt-dlp     → 下载视频
-                        ├─ 2. spawn python     → mlx-whisper 转录 → .srt
+                        ├─ 2. spawn python     → mlx-whisper 转录
+                        │     │
+                        │     ├─ 首次转录（no_speech_threshold=0.6，保准确）
+                        │     ├─ 过滤重复幻觉段
+                        │     ├─ 扫描时间轴找 ≥2.5s 可疑间隙（logprob 加权）
+                        │     ├─ 对所有间隙二次补录（threshold=0.3，捕获弱语音）
+                        │     └─ 双重去重（文本相似 + 时间重叠 IoU）→ .srt
                         ├─ 3. call DeepSeek API → 翻译 → .zh.srt
                         └─ 4. spawn ffmpeg     → 硬嵌入 → _subtitled.mp4
                         │
