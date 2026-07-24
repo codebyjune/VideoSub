@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("api", {
   startWorkflow: (config) => ipcRenderer.invoke("start-workflow", config),
   clearDownloads: () => ipcRenderer.invoke("clear-downloads"),
   browseFile: () => ipcRenderer.invoke("browse-file"),
+  openLocalWindow: () => ipcRenderer.send("open-local-window"),
   onLog: (callback) => {
     ipcRenderer.on("log", (_, msg) => callback(msg));
   },

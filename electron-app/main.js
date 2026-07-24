@@ -4,6 +4,10 @@ const fs = require("fs");
 const {
   DOWNLOADS_DIR,
   setMainWindow,
+  registerLocalWindow,
+  setCurrentWindowId,
+  getIsBusy,
+  setIsBusy,
   setIsCancelled,
   getIsCancelled,
   setIsSeriesMode,
@@ -41,8 +45,29 @@ function createWindow() {
 app.whenReady().then(createWindow);
 
 app.on("window-all-closed", () => {
-  app.quit();
+  if (process.platform !== "darwin") app.quit();
 });
+
+app.on("activate", () => {
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});
+
+// ── 本地视频窗口（跳过下载，直接转录→翻译→烧录）──────────────
+function createLocalVideoWindow() {
+  const win = new BrowserWindow({
+    width: 820,
+    height: 720,
+    title: "本地视频转录",
+    webPreferences: {
+      preload: path.join(__dirname, "preload-local.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  registerLocalWindow(win);
+  win.loadFile("local.html");
+  return win;
+}
 
 async function processSingleVideo(
   videoPath,
@@ -125,6 +150,11 @@ ipcMain.handle(
     url, modelSize, targetLang, apiKey, baseUrl,
     llmModel, burnSubtitleMode, cookiesFile, downloadSeries,
   }) => {
+    if (getIsBusy()) {
+      return { success: false, error: "已有任务正在运行，请等待完成或取消后再试" };
+    }
+    setIsBusy(true);
+    try {
     setIsCancelled(false);
     setIsSeriesMode(!!downloadSeries);
     setCurrentProcess(null);
@@ -249,6 +279,9 @@ ipcMain.handle(
 
       return { success: false, error: err.message };
     }
+    } finally {
+      setIsBusy(false);
+    }
   },
 );
 
@@ -306,3 +339,88 @@ ipcMain.handle("clear-downloads", async () => {
   }
   return 0;
 });
+
+// ── 打开本地视频窗口 ──────────────────────────────────────
+ipcMain.on("open-local-window", () => {
+  createLocalVideoWindow();
+});
+
+// ── 浏览本地视频文件 ──────────────────────────────────────
+ipcMain.handle("browse-video", async () => {
+  const focused = BrowserWindow.getFocusedWindow() || mainWindow;
+  const result = await dialog.showOpenDialog(focused, {
+    title: "选择视频文件",
+    filters: [
+      { name: "Video Files", extensions: ["mp4", "mkv", "webm", "mov", "avi", "m4v", "flv"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
+    properties: ["openFile"],
+  });
+  if (!result.canceled && result.filePaths.length > 0) {
+    return result.filePaths[0];
+  }
+  return null;
+});
+
+// ── 本地视频工作流：跳过下载，直接 转录→翻译→烧录 ───────────
+ipcMain.handle(
+  "start-local-workflow",
+  async (event, {
+    videoPath, modelSize, targetLang, apiKey, baseUrl,
+    llmModel, burnSubtitleMode,
+  }) => {
+    if (getIsBusy()) {
+      return { success: false, error: "已有任务正在运行，请等待完成或取消后再试" };
+    }
+    setIsBusy(true);
+    setIsCancelled(false);
+    setIsSeriesMode(false);
+    setCurrentProcess(null);
+
+    const senderWin = BrowserWindow.fromWebContents(event.sender);
+    const winId = senderWin
+      ? `local:${senderWin.id}`
+      : null;
+    if (winId) setCurrentWindowId(winId);
+
+    try {
+      if (!videoPath || !videoPath.trim()) throw new Error("请选择视频文件");
+      if (!apiKey || !apiKey.trim()) throw new Error("请输入 LLM API Key");
+      if (!fs.existsSync(videoPath)) throw new Error(`文件不存在: ${videoPath}`);
+
+      sendStatus("running");
+      sendLog("═══════════════════════════════════");
+      sendLog("  本地视频转录 - 开始");
+      sendLog(`  文件: ${path.basename(videoPath)}`);
+      sendLog(`  模型: ${modelSize}`);
+      sendLog("═══════════════════════════════════");
+
+      const result = await processSingleVideo(
+        videoPath, modelSize, apiKey, baseUrl, llmModel, burnSubtitleMode, targetLang,
+      );
+
+      sendStatus("done");
+      sendLog("");
+      sendLog("═══════════════════════════════════");
+      sendLog("🎉 全部完成！");
+      sendLog(`  输出文件: ${result}`);
+      sendLog("═══════════════════════════════════");
+
+      return { success: true, output: result };
+    } catch (err) {
+      if (err.message === "任务已取消") {
+        sendStatus("cancelled");
+        sendLog("");
+        sendLog("⏹ 任务已取消");
+        return { success: false, error: "任务已取消" };
+      }
+      sendStatus("error");
+      sendLog("");
+      sendLog(`❌ 错误: ${err.message}`);
+      return { success: false, error: err.message };
+    } finally {
+      setCurrentWindowId(null);
+      setIsBusy(false);
+    }
+  },
+);
