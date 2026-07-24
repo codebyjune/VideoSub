@@ -682,9 +682,49 @@ select {
 .card:nth-child(2) { animation-delay: 60ms; }
 .card:nth-child(3) { animation-delay: 120ms; }
 
+/* ── Sidebar section (local video entry) ──────────────── */
+
+.sidebar-section {
+  width: 100%;
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-action-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--blue);
+  color: #FFFFFF;
+  border: none;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font-stack);
+  cursor: pointer;
+  transition: all var(--transition);
+  box-shadow: 0 2px 8px var(--blue-glow);
+}
+
+.sidebar-action-btn:hover {
+  background: var(--blue-hover);
+  transform: scale(1.02);
+}
+
+.sidebar-action-btn:active {
+  transform: scale(0.98);
+}
+
+.sidebar-action-btn svg {
+  flex-shrink: 0;
+}
+
 /* ═══════════════════════════════════════════════════════
-   Responsive
-   ═══════════════════════════════════════════════════════ */
+    Responsive
+    ═══════════════════════════════════════════════════════ */
 
 @media (max-width: 720px) {
   #app {

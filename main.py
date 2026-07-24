@@ -129,8 +129,9 @@ def find_suspicious_gaps(segments, total_duration=None):
       - 时间间隔 ≥ GAP_THRESHOLD
       - 且 前后段 avg_logprob 较高（说明前后确实在说话，中间突然断了更可疑）
 
-    total_duration 用于防止最后一个 segment 之后的时间被误判为遗漏
-    （片尾静音不是遗漏）。若为 None 则仅检查 segment 之间的间隙。
+    total_duration 用于检测片尾间隙：最后一个 segment 之后到视频结尾
+      若仍有 ≥ GAP_THRESHOLD 的空白，也会纳入补录（防止片尾重复幻觉
+      吞掉真实内容）。若为 None 则仅检查 segment 之间的间隙。
 
     返回 [(gap_start, gap_end, score), ...]
         score ∈ [0,1]，越大越值得补录。
@@ -160,8 +161,21 @@ def find_suspicious_gaps(segments, total_duration=None):
 
         gaps.append((cur_end, nxt_start, score))
 
-    # 片尾不补：结尾之后的静音不是遗漏（由调用方保证最后一个 segment
-    #   已是真实内容，这里只处理 segment 之间的间隙）
+    # 片尾补录：最后一个 segment 到视频结尾之间的间隙也可能含说话内容。
+    #   尤其在 condition_on_previous_text=True 触发片尾重复幻觉时，
+    #   真实后续内容会被吞掉，导致最后一条 segment 过早结束。
+    if total_duration is not None and n > 0:
+        last_end = segments[-1].get("end", 0)
+        tail_gap = total_duration - last_end
+        if tail_gap >= GAP_THRESHOLD:
+            lp_before = segments[-1].get("avg_logprob", float("nan"))
+            if math.isnan(lp_before):
+                lp_before = LOGPROB_SURE
+            sure = 1 if lp_before >= LOGPROB_SURE else 0
+            time_factor = min(tail_gap / 10.0, 1.0)
+            score = (sure / 2.0) * 0.6 + time_factor * 0.4
+            gaps.append((last_end, total_duration, score))
+
     return gaps
 
 

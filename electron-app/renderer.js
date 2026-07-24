@@ -284,3 +284,8 @@ $("#browseCookiesBtn").addEventListener("click", async () => {
     localStorage.setItem("cookiesFile", filePath);
   }
 });
+
+// ── Open Local Video Window ───────────────────────────────
+$("#openLocalBtn").addEventListener("click", () => {
+  window.api.openLocalWindow();
+});

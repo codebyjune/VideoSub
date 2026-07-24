@@ -27,9 +27,41 @@ let mainWindow = null;
 let currentProcess = null;
 let isCancelled = false;
 let isSeriesMode = false;
+let isBusy = false;
+
+// 当前活跃窗口上下文：本地视频窗口流程启动时设置，
+// 使所有下游 sendLog/sendProgress 自动路由到对应窗口，无需逐函数透传。
+// main 流程保持 currentWindowId = null（走 mainWindow 默认分支）。
+let currentWindowId = null;
+
+function setCurrentWindowId(id) {
+  currentWindowId = id || null;
+}
+
+function getCurrentWindowId() {
+  return currentWindowId;
+}
+
+// 活跃窗口注册表：windowId -> BrowserWindow
+// main 窗口的 windowId 固定为 "main"，本地视频窗口用其 Electron 内置 id："local:<win.id>"
+const activeWindows = new Map();
 
 function setMainWindow(win) {
   mainWindow = win;
+  if (win) {
+    activeWindows.set("main", win);
+    win.on("closed", () => {
+      activeWindows.delete("main");
+      if (mainWindow === win) mainWindow = null;
+    });
+  }
+}
+
+function registerLocalWindow(win) {
+  const id = `local:${win.id}`;
+  activeWindows.set(id, win);
+  win.on("closed", () => activeWindows.delete(id));
+  return id;
 }
 
 function setIsCancelled(v) {
@@ -50,6 +82,14 @@ function setCurrentProcess(p) {
 
 function getCurrentProcess() {
   return currentProcess;
+}
+
+function getIsBusy() {
+  return isBusy;
+}
+
+function setIsBusy(v) {
+  isBusy = v;
 }
 
 function extractResponseText(response) {
@@ -105,23 +145,30 @@ function cleanEmptyDirs(dir) {
   }
 }
 
-function send(channel, data) {
+function send(channel, data, windowId) {
+  if (windowId) {
+    const win = activeWindows.get(windowId);
+    if (win && !win.isDestroyed()) {
+      win.webContents.send(channel, data);
+    }
+    return;
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, data);
   }
 }
 
-function sendLog(message) {
-  send("log", message);
+function sendLog(message, windowId) {
+  send("log", message, windowId !== undefined ? windowId : currentWindowId);
 }
 
-function sendProgress(step, percent) {
+function sendProgress(step, percent, windowId) {
   if (isSeriesMode && step !== "series") return;
-  send("progress", { step, percent });
+  send("progress", { step, percent }, windowId !== undefined ? windowId : currentWindowId);
 }
 
-function sendStatus(status) {
-  send("status", status);
+function sendStatus(status, windowId) {
+  send("status", status, windowId !== undefined ? windowId : currentWindowId);
 }
 
 module.exports = {
@@ -134,11 +181,16 @@ module.exports = {
   isMac,
   isPackaged,
   setMainWindow,
+  registerLocalWindow,
+  setCurrentWindowId,
+  getCurrentWindowId,
   setIsCancelled,
   getIsCancelled,
   setIsSeriesMode,
   setCurrentProcess,
   getCurrentProcess,
+  getIsBusy,
+  setIsBusy,
   extractResponseText,
   isFinalVideo,
   collectMediaFiles,
